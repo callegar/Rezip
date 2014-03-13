@@ -1,0 +1,188 @@
+#! /bin/bash
+#
+# (c) 2008, 2014 Sergio Callegari
+#
+# Rewrites a zip archive, changing the compression level
+#
+# This code is a big hack because zip has different ways of storing
+# attributes (unix, fat, etc.). When unzipping and rezipping on a
+# given host the way in which the attributs are stored may get changed
+# to that corresponding to the particular host operating system and
+# setting combination (with no explicit way to change this behavior).
+# To cope with this issue, some workarounds are employed here.
+# Specifically, extended attributes are dropped and a umask hack is
+# used.  One day, all this will be rewritten to use a proper zip
+# library allowing low level control of attributes and such.
+
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+
+#    You should have received a copy of the GNU General Public License along
+#    with this program; if not, write to the Free Software Foundation, Inc.,
+#    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+# Thanks to Paolo Bonzini for suggestions on code
+
+VERSION=0.9g
+
+USAGE="rezip $VERSION (c) 2008, 2014 Sergio Callegari
+Usage: rezip [options] [file]
+with options:
+  [-h | --help]            Gives help
+  [--unzip_opts options]   Pass options to unzip helper to read zip file
+  [--zip_opts options]     Pass options to zip helper to write zip file
+  [-u | --umask mask]      Force umask when calling unzip to read zip file
+  [-p | --profile profile] Get options for helpers from profile
+  [-p ?]                   Lists known profiles
+
+Rewrites a zip archive, changing the compression level.
+If the archive name is unspecified, then the command operates like a filter,
+reading from standard input and writing to standard output.
+Options can be manually provided to the unzip process doing the read and to
+the zip process doing the write. Alternatively a profile can be used to set
+options automatically.
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+"
+
+# For past compatibility reasons, profiles are called ODF_UNCOMPRESS2 and
+# ODF_COMPRESS2. Names ODF_UNCOMPRESS and ODF_COMPRESS are reserved,
+# since they were used by a previous version of this code and they had
+# issues. Similarly, names ODF_UNCOMPRESS3 and ODF_COMPRESS3 should not
+# be used, having been adopted in the past for another broken implementation
+
+PROFILES="UNCOMRESS COMPRESS ODF_UNCOMPRESS2 ODF_COMPRESS2"
+
+# default mask
+MASK=none
+
+# Profile definition
+
+# The older ODF_COMPRESS and ODF_UNCOMPRESS profiles
+# --------------------------------------------------
+# These are broken and cannot be used.
+# They did removal of extended attributes at the wrong side.
+# Removal of extended attributes should happen on zipping, not on unzipping
+# otherwise files may get zipped with different owners on different hosts
+#PROFILE_UNZIP_ODF_UNCOMPRESS='-b -qq -X'
+#PROFILE_ZIP_ODF_UNCOMPRESS='-q -r -D -0'
+#PROFILE_UNZIP_ODF_COMPRESS='-b -qq -X'
+#PROFILE_ZIP_ODF_COMPRESS='-q -r -D -6'
+
+# The newer ODF_COMPRESS2 and ODF_UNCOMPRESS2 profiles
+# --------------------------------------------------
+PROFILE_UNZIP_ODF_UNCOMPRESS2='-b -qq'
+PROFILE_ZIP_ODF_UNCOMPRESS2='-q -r -D -0 -X'
+PROFILE_UNZIP_ODF_COMPRESS2='-b -qq'
+PROFILE_ZIP_ODF_COMPRESS2='-q -r -D -6 -X'
+PROFILE_MASK_ODF_UNCOMPRESS2='0022'
+
+# An attempt at even more efficient profiles ODF_COMPRESS3 ODF_UNCOMPRESS3
+# -------------------------------------------------------------------------
+# These are also broken and cannot be used, although they would be desirable
+# The idea here is to use -k option to disable the saving of unix permissions
+# Disabling them seems a good idea since they create issues 
+# if a file gets rezipped on different hosts with different umasks
+# Unfortunately -k also mangles filenames
+#PROFILE_UNZIP_ODF_UNCOMPRESS3='-b -qq'
+#PROFILE_ZIP_ODF_UNCOMPRESS3='-q -r -D -0 -X -k'
+#PROFILE_UNZIP_ODF_COMPRESS3='-b -qq'
+#PROFILE_ZIP_ODF_COMPRESS3='-q -r -D -6 -X -k'
+
+die() 
+{
+    echo "$1" >&$2
+    exit $3
+}
+
+UNZIP_OPTS=""
+ZIP_OPTS=""
+
+check_profile()
+{
+    for prof in $PROFILES; do
+	[ $1 == $prof ] && return 0
+    done
+    die "Unknown profile: $profile" 2 1
+}
+
+set_profile()
+{
+	profile_unzip=PROFILE_UNZIP_$1
+	profile_zip=PROFILE_ZIP_$1
+	profile_mask=PROFILE_MASK_$1
+	UNZIP_OPTS=${!profile_unzip}
+	ZIP_OPTS=${!profile_zip}
+	[ -n "${!profile_mask}" ] && MASK=${!profile_mask}
+}
+
+while true ; do
+    case "$1" in
+	-h | --help)
+	    die "$USAGE" 1 0 ;;
+	-p | --profile)
+	    if [ "$2" = "?" ] ; then
+		die "Avalilable profiles: ${PROFILES}" 1 0 ;
+	    else
+		profile=$2
+		shift
+		check_profile $profile
+		set_profile $profile
+	    fi ;;
+	-u | --umask)
+	    MASK=$2
+	    shift ;;
+	--unzip_opts)
+	    UNZIP_OPTS=${UNZIP_OPTS} $2
+	    shift ;;
+	--zip_opts)
+	    ZIP_OPTS=${ZIP_OPTS} $2
+	    shift ;;
+	-*)
+	    die "$USAGE" 2 1 ;;
+	*)
+	    break ;;
+    esac
+    shift
+done
+
+saved_mask=$(umask)
+
+if [ $# = 0 ] ; then
+    tmpcopy=$(mktemp -t rezip.zip.XXXXXX)
+    cat > $tmpcopy
+    filename="$tmpcopy"
+else
+    tmpcopy=""
+    filename="$(readlink -f "$1")"
+fi
+ 
+workdir=$(mktemp -d -t rezip.workdir.XXXXXX)
+curdir="$(pwd)"
+
+cd "$workdir"
+[ "$MASK" != "none" ] && umask $MASK
+unzip $UNZIP_OPTS "$filename"
+umask $saved_mask
+zip $ZIP_OPTS "$filename" .
+cd "$curdir"
+rm -fr "$workdir"
+if [ ! -z "$tmpcopy" ] ; then
+  cat "$filename"
+  rm "$tmpcopy"
+fi
