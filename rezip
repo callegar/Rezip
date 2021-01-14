@@ -66,7 +66,7 @@ GNU General Public License for more details.
 # issues. Similarly, names ODF_UNCOMPRESS3 and ODF_COMPRESS3 should not
 # be used, having been adopted in the past for another broken implementation
 
-PROFILES="UNCOMRESS COMPRESS ODF_UNCOMPRESS2 ODF_COMPRESS2"
+PROFILES="UNCOMPRESS COMPRESS ODF_UNCOMPRESS2 ODF_COMPRESS2"
 
 # default mask
 MASK=none
